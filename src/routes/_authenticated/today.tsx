@@ -84,16 +84,22 @@ function Today() {
               Write it
             </Link>
             <div className="grid grid-cols-2 gap-3">
-              <Button variant="outline" disabled title="Coming soon">
+              <Link
+                to="/answer"
+                search={{ mode: "voice" }}
+                className="flex items-center justify-center rounded-md border border-border px-5 py-3 text-base font-medium transition-colors hover:bg-secondary"
+              >
                 Speak it
-              </Button>
-              <Button variant="outline" disabled title="Coming soon">
+              </Link>
+              <Link
+                to="/answer"
+                search={{ mode: "photo" }}
+                className="flex items-center justify-center rounded-md border border-border px-5 py-3 text-base font-medium transition-colors hover:bg-secondary"
+              >
                 Start from a photo
-              </Button>
+              </Link>
             </div>
-            <p className="text-center text-xs text-muted-foreground">
-              Voice and photos arrive in the next update.
-            </p>
+
           </div>
 
           <div className="mt-10 border-t border-border pt-6">
