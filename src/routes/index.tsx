@@ -8,7 +8,9 @@ export const Route = createFileRoute("/")({
       { name: "description", content: brand.description },
       { property: "og:title", content: `${brand.name} — ${brand.tagline}` },
       { property: "og:description", content: brand.description },
+      { property: "og:url", content: "https://back-then.lovable.app/" },
     ],
+    links: [{ rel: "canonical", href: "https://back-then.lovable.app/" }],
   }),
   component: Landing,
 });
