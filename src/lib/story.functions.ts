@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { decodeBase64, MAX_UPLOAD_BYTES } from "@/lib/media";
 
 const LIFE_STAGE_BY_TOPIC: Record<string, string[]> = {
   Childhood: ["childhood"],
@@ -351,4 +352,173 @@ export const getMemory = createServerFn({ method: "GET" })
       .maybeSingle();
     if (error) throw new Error(error.message);
     return memory;
+  });
+
+/**
+ * Records the person's choice after an optional AI pass. The original text is
+ * always kept; `use_polished` only decides what we show by default.
+ */
+export const setMemoryVersion = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z
+      .object({
+        memoryId: z.string().uuid(),
+        usePolished: z.boolean(),
+        editedPolishedText: z.string().max(20000).nullable().optional(),
+        title: z.string().trim().max(120).nullable().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const patch: { use_polished: boolean; polished_text?: string; title?: string } = {
+      use_polished: data.usePolished,
+    };
+    if (data.editedPolishedText) patch.polished_text = data.editedPolishedText;
+    if (data.title) patch.title = data.title;
+    const { error } = await supabase
+      .from("memories")
+      .update(patch)
+      .eq("id", data.memoryId)
+      .eq("user_id", userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+export const attachRecording = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z.object({ recordingId: z.string().uuid(), memoryId: z.string().uuid() }).parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const { error } = await supabase
+      .from("recordings")
+      .update({ memory_id: data.memoryId })
+      .eq("id", data.recordingId)
+      .eq("user_id", userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+/** Saves a follow-up question so it can be answered now or later. */
+export const saveFollowUp = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z
+      .object({
+        text: z.string().trim().min(1).max(300),
+        answerNow: z.boolean().default(false),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const { data: inserted, error } = await supabase
+      .from("user_questions")
+      .insert({
+        user_id: userId,
+        custom_question_text: data.text,
+        status: data.answerNow ? "active" : "saved_for_later",
+        source: "followup",
+        scheduled_for: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    return { userQuestionId: inserted.id };
+  });
+
+export const uploadMemoryPhoto = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z
+      .object({
+        fileBase64: z.string().min(1),
+        mimeType: z.string().max(80),
+        memoryId: z.string().uuid().nullable().optional(),
+        caption: z.string().trim().max(300).nullable().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const bytes = decodeBase64(data.fileBase64);
+    if (bytes.byteLength > MAX_UPLOAD_BYTES) throw new Error("That photo is too large.");
+    const ext = data.mimeType.includes("png") ? "png" : data.mimeType.includes("webp") ? "webp" : "jpg";
+    const path = `${userId}/${crypto.randomUUID()}.${ext}`;
+    const { error: uploadError } = await supabase.storage
+      .from("memory-photos")
+      .upload(path, bytes, { contentType: data.mimeType, upsert: false });
+    if (uploadError) throw new Error(uploadError.message);
+
+    const { data: photo, error } = await supabase
+      .from("memory_photos")
+      .insert({
+        user_id: userId,
+        storage_path: path,
+        memory_id: data.memoryId ?? null,
+        caption: data.caption || null,
+      })
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    return { photoId: photo.id, storagePath: path };
+  });
+
+export const attachPhoto = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z.object({ photoId: z.string().uuid(), memoryId: z.string().uuid() }).parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const { error } = await supabase
+      .from("memory_photos")
+      .update({ memory_id: data.memoryId })
+      .eq("id", data.photoId)
+      .eq("user_id", userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+/** Short-lived signed URLs for private media on a memory. */
+export const getMemoryMedia = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => z.object({ memoryId: z.string().uuid() }).parse(input))
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const [{ data: recordings }, { data: photos }] = await Promise.all([
+      supabase
+        .from("recordings")
+        .select("id,storage_path,duration_seconds,raw_transcript")
+        .eq("memory_id", data.memoryId)
+        .eq("user_id", userId),
+      supabase
+        .from("memory_photos")
+        .select("id,storage_path,caption")
+        .eq("memory_id", data.memoryId)
+        .eq("user_id", userId),
+    ]);
+
+    const audio = await Promise.all(
+      (recordings ?? []).map(async (r) => {
+        const { data: signed } = await supabase.storage
+          .from("memory-audio")
+          .createSignedUrl(r.storage_path, 3600);
+        return { id: r.id, url: signed?.signedUrl ?? null, durationSeconds: r.duration_seconds };
+      }),
+    );
+
+    const images = await Promise.all(
+      (photos ?? []).map(async (p) => {
+        const { data: signed } = await supabase.storage
+          .from("memory-photos")
+          .createSignedUrl(p.storage_path, 3600);
+        return { id: p.id, url: signed?.signedUrl ?? null, caption: p.caption };
+      }),
+    );
+
+    return { audio, images };
   });
