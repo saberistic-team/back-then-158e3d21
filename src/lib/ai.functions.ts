@@ -118,7 +118,7 @@ export const enrichSavedMemory = createServerFn({ method: "POST" })
 
     return {
       polished: result.polished,
-      title: patch["title"] ?? memory.title ?? null,
+      title: patch.title ?? memory.title ?? null,
       people: result.people,
       places: result.places,
       followUp: result.followUp,
