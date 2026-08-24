@@ -83,13 +83,19 @@ export const enrichSavedMemory = createServerFn({ method: "POST" })
       text: memory.original_text,
     });
 
-    const patch: Record<string, unknown> = { polished_text: result.polished };
-    if (!memory.title && result.title) patch["title"] = result.title;
+    const patch: {
+      polished_text: string;
+      title?: string;
+      approximate_year?: number;
+      memory_date_type?: string;
+    } = { polished_text: result.polished };
+    if (!memory.title && result.title) patch.title = result.title;
     if (!memory.approximate_year && result.approximateYear) {
-      patch["approximate_year"] = result.approximateYear;
-      if (memory.memory_date_type === "unknown") patch["memory_date_type"] = "approximate_year";
+      patch.approximate_year = result.approximateYear;
+      if (memory.memory_date_type === "unknown") patch.memory_date_type = "approximate_year";
     }
     await supabase.from("memories").update(patch).eq("id", memory.id).eq("user_id", userId);
+
 
     for (const name of result.people) {
       const { data: person } = await supabase
